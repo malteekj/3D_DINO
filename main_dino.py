@@ -226,8 +226,10 @@ def train_dino(args):
         resnet = torchvision.models.resnet152(pretrained=True)
         # breakpoint()
         
-        student = i3res.I3ResNet(copy.deepcopy(resnet), class_nb=2048, conv_class=True)
-        teacher = i3res.I3ResNet(copy.deepcopy(resnet), class_nb=2048, conv_class=True)
+        student = i3res.I3ResNet(copy.deepcopy(resnet), class_nb=2048, conv_class=True, grad_checkpoint=True)
+        teacher = i3res.I3ResNet(copy.deepcopy(resnet), class_nb=2048, conv_class=True, grad_checkpoint=False)
+        
+        # breakpoint()
         
         # student = ResNet152Checkpointed(student)
         # teacher = ResNet152Checkpointed(teacher)
@@ -257,13 +259,13 @@ def train_dino(args):
         teacher = nn.SyncBatchNorm.convert_sync_batchnorm(teacher)
 
         # we need DDP wrapper to have synchro batch norms working...
-        teacher = nn.parallel.DistributedDataParallel(teacher, device_ids=[args.gpu], find_unused_parameters=True)
+        teacher = nn.parallel.DistributedDataParallel(teacher, device_ids=[args.gpu], find_unused_parameters=False)
         teacher_without_ddp = teacher.module
     else:
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
         
-    student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu], find_unused_parameters=True)
+    student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu], find_unused_parameters=False)
     # teacher and student start with the same weights
     teacher_without_ddp.load_state_dict(student.module.state_dict())
     # there is no backpropagation through the teacher, so no need for gradients
@@ -564,7 +566,7 @@ class NumpyDataset3D(Dataset):
                     self.files.append(os.path.join(root, file))
 
     def __len__(self):
-        return len(self.files)*100
+        return len(self.files)*1000
 
     def __getitem__(self, idx):
         # Load the NIfTI file

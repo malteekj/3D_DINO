@@ -2,12 +2,13 @@ import math
 
 import torch
 from torch.nn import ReplicationPad3d
+from torch.utils.checkpoint import checkpoint, checkpoint_sequential
 
 from . import inflate
 
 
 class I3ResNet(torch.nn.Module):
-    def __init__(self, resnet2d, frame_nb=16, class_nb=1000, conv_class=False):
+    def __init__(self, resnet2d, frame_nb=16, class_nb=1000, conv_class=False, grad_checkpoint=False):
         """
         Args:
             conv_class: Whether to use convolutional layer as classifier to
@@ -15,6 +16,7 @@ class I3ResNet(torch.nn.Module):
         """
         super(I3ResNet, self).__init__()
         self.conv_class = conv_class
+        self.grad_checkpoint = grad_checkpoint
 
         self.conv1 = inflate.inflate_conv(
             resnet2d.conv1, time_dim=3, time_padding=1, center=True)
@@ -27,6 +29,13 @@ class I3ResNet(torch.nn.Module):
         self.layer2 = inflate_reslayer(resnet2d.layer2)
         self.layer3 = inflate_reslayer(resnet2d.layer3)
         self.layer4 = inflate_reslayer(resnet2d.layer4)
+        
+        self.features = torch.nn.Sequential(
+            # self.conv1,
+            self.bn1,
+            self.relu,
+            self.maxpool
+        )
 
         if conv_class:
             self.avgpool = inflate.inflate_pool(resnet2d.avgpool, time_dim=1)
@@ -41,7 +50,65 @@ class I3ResNet(torch.nn.Module):
                 resnet2d.avgpool, time_dim=final_time_dim)
             self.fc = inflate.inflate_linear(resnet2d.fc, 1)
 
+
+
     def forward(self, x):
+        
+        
+        x = self.conv1(x)
+
+        if self.grad_checkpoint:
+            
+            x = checkpoint(self.features, x, use_reentrant=False)
+            x = checkpoint(self.layer1, x, use_reentrant=False)
+            x = checkpoint(self.layer2, x, use_reentrant=False)
+            x = checkpoint(self.layer3, x, use_reentrant=False)
+            x = checkpoint(self.layer4, x, use_reentrant=False)
+        
+        else:
+            x = self.bn1(x)
+            x = self.relu(x)
+            x = self.maxpool(x)
+            x = self.layer1(x)
+            x = self.layer2(x)
+            x = self.layer3(x)
+            x = self.layer4(x)
+            
+        # x = self.conv1(x)
+        # if self.grad_checkpoint:
+        #     # the use_reentrant=False is key to make it work with DDP
+        #     # x = checkpoint_sequential(self.features, 20, x, use_reentrant=False)
+        # else:
+        #     x = self.bn1(x)
+        #     x = self.relu(x)
+        #     x = self.maxpool(x)
+        #     x = self.layer1(x)
+        #     x = self.layer2(x)
+        #     x = self.layer3(x)
+        #     x = self.layer4(x)
+        
+        
+        # x = self.conv1(x)
+        # x = checkpoint_sequential(self.features, 2, x)
+        
+
+        if self.conv_class:
+            x = self.avgpool(x)
+            if self.grad_checkpoint:
+                x = checkpoint(self.classifier, x, use_reentrant=False)
+            else:
+                x = self.classifier(x)
+                
+            x = x.squeeze(3)
+            x = x.squeeze(3)
+            x = x.mean(2)
+        else:
+            x = self.avgpool(x)
+            x_reshape = x.view(x.size(0), -1)
+            x = self.fc(x_reshape)
+        return x
+    
+    def forward_old(self, x):
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
